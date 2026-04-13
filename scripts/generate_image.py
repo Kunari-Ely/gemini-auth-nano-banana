@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", "-p", help="Edit instruction text.")
     parser.add_argument(
         "--prompt-json",
-        help="Optional JSON brief file containing a top-level prompt field.",
+        help="Optional JSON prompt file. The full JSON payload is serialized and sent to Gemini.",
     )
     parser.add_argument(
         "--input",
@@ -147,9 +147,9 @@ def main() -> int:
             prompt_data = json.loads(
                 Path(args.prompt_json).expanduser().resolve().read_text(encoding="utf-8")
             )
-            prompt = prompt_data.get("prompt", prompt)
+            prompt = json.dumps(prompt_data, ensure_ascii=False, indent=2)
         if not prompt:
-            raise ValueError("Provide --prompt or --prompt-json with a top-level prompt field.")
+            raise ValueError("Provide --prompt or --prompt-json.")
         inputs = resolve_inputs(args.input)
         final_path = asyncio.run(
             generate_image(

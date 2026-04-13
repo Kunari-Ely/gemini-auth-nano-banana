@@ -1,6 +1,6 @@
 ---
 name: gemini-auth-nano-banana
-description: Build and optimize Gemini or Nano Banana image prompts for any coding agent platform, then optionally execute them through a logged-in Gemini web session instead of an API key. Use when Codex, Claude Code, OpenClaw, Antigravity, or similar agents need structured prompt planning, image-to-image editing, identity-preserving redraws, background replacement, pose changes, compositing, or style-guided variations.
+description: Build and optimize Gemini or Nano Banana image prompts for any coding agent platform, then optionally execute them through a logged-in Gemini web session instead of an API key. Use when Codex, Claude Code, OpenClaw, Antigravity, or similar agents need structured JSON prompt planning, image-to-image editing, identity-preserving redraws, background replacement, pose changes, compositing, or style-guided variations, and the final prompt sent to Nano Banana should itself be JSON.
 ---
 
 # Gemini Auth Nano Banana
@@ -15,12 +15,11 @@ The skill has two layers:
 ## Cross-Platform Workflow
 
 1. Gather the user goal, output format, and reference images.
-2. Convert the request into a JSON prompt brief.
-3. Expand the JSON brief into a natural-language Nano Banana prompt.
-4. Send that prompt plus the reference images to the platform's preferred Gemini workflow.
+2. Convert the request into a JSON prompt.
+3. Send that JSON prompt plus the reference images to the platform's preferred Gemini workflow.
 5. If the local environment supports Gemini Web auth, use the bundled execution script.
 
-This workflow is suitable for Codex, Claude Code, OpenClaw, Antigravity, and other agent frameworks because the planning format is plain JSON plus plain text.
+This workflow is suitable for Codex, Claude Code, OpenClaw, Antigravity, and other agent frameworks because the planning format is plain JSON.
 
 ## Prompt Optimization Rules
 
@@ -37,58 +36,69 @@ Favor these traits:
 - Include negative constraints such as no watermark, no extra objects, no anatomy drift, no text errors, or no background.
 - Keep the final prompt compact when the task is simple and expand it only when the scene is complex.
 
-## JSON Prompt Brief
+## Final JSON Prompt
 
-Always normalize the request into this shape before writing the final prompt:
+Strictly follow a JSON-first workflow inspired by public JSON-style prompts in `YouMind-OpenLab/awesome-nano-banana-pro-prompts`.
+
+Always normalize the request into a final prompt like this:
 
 ```json
 {
-  "model_family": "nano-banana",
-  "task_type": "image_edit",
+  "meta": {
+    "format": "nano-banana-json-prompt",
+    "version": "1.0",
+    "source": "gemini-auth-nano-banana",
+    "inspired_by": "YouMind-OpenLab/awesome-nano-banana-pro-prompts",
+    "task_type": "image_edit"
+  },
   "intent": {
     "goal": "short outcome statement",
     "use_case": "character | ecommerce-main-image | infographic-edu-visual | ...",
     "style": "anime-manga | photography | illustration | ...",
     "subject": "main subject description"
   },
-  "references": [
+  "input_images": [
     {
       "path": "/absolute/path/to/image.png",
       "role": "base"
     }
   ],
-  "constraints": {
-    "must_keep": ["identity", "outfit colors"],
-    "avoid": ["watermark", "extra fingers"],
-    "background": "transparent",
-    "aspect_ratio": "auto"
-  },
-  "render": {
+  "instructions": {
+    "identity_preservation": ["identity", "outfit colors"],
     "composition": "full body crouching pose",
     "lighting": "soft studio light",
     "camera": "not specified",
-    "output_count": 1
+    "background": "transparent",
+    "aspect_ratio": "auto"
   },
-  "prompt": "final optimized natural-language prompt"
+  "constraints": {
+    "must_keep": ["identity", "outfit colors"],
+    "avoid": ["watermark", "extra fingers"]
+  },
+  "output": {
+    "count": 1,
+    "format": "png",
+    "background": "transparent"
+  }
 }
 ```
 
-The exact category values do not need to be exhaustive. Prefer readable slugs that reflect the source project's category style.
+The JSON object itself is the final prompt sent to Nano Banana. Do not expand it into a separate natural-language prompt unless the target platform explicitly requires that fallback.
 
 ## Bundled Scripts
 
-### Build JSON plus prompt
+### Build final JSON prompt
 
 ```bash
 uv run {baseDir}/scripts/optimize_prompt.py --goal "Create a crouching full-body transparent-background pose" --subject "same anime girl from the reference image" --style "anime-manga" --use-case "character" --reference "/path/to/image.png::base" --must-keep "same face" --must-keep "same hair color" --avoid "watermark" --avoid "extra objects"
 ```
 
-This prints a JSON prompt brief and includes the final optimized prompt inside the `prompt` field.
+This prints the final JSON prompt that should be sent to Nano Banana.
 
 ### Optional local execution through Gemini Web
 
 ```bash
-uv run {baseDir}/scripts/generate_image.py --prompt "..." --input "/path/to/source.png" --output "result.png"
+uv run {baseDir}/scripts/generate_image.py --prompt-json "/path/to/prompt.json" --input "/path/to/source.png" --output "result.png"
 ```
 
 Use the execution script only when the current machine can access Gemini Web through browser cookies or a local cookies file.
@@ -116,6 +126,6 @@ Treat these cookies like passwords. Never paste them into chat output or commit 
 
 ## Notes
 
-- The prompt-optimization workflow is the portable core of this skill.
+- The JSON prompt workflow is the portable core of this skill.
 - The Gemini execution script depends on the unofficial `gemini-webapi` package and current Gemini web behavior, so it may break if Google changes the site.
-- If execution is unavailable on a given platform, still use the JSON brief and final prompt with that platform's own image workflow.
+- If execution is unavailable on a given platform, still use the final JSON prompt with that platform's own image workflow.

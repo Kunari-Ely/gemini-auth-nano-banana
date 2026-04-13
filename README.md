@@ -6,8 +6,8 @@
 
 它适用于 Codex、Claude Code、OpenClaw、Antigravity 等平台，核心流程是：
 
-- 把需求整理成结构化 JSON prompt brief
-- 生成更适合 Nano Banana 的自然语言提示词
+- 把需求整理成最终可执行的 JSON 格式提示词
+- 将整段 JSON 直接发送给 Nano Banana
 - 在支持的环境中直接调用 Gemini Web 出图
 
 最简安装方式
@@ -26,7 +26,7 @@
 - 使用浏览器（默认Chrome）的 Google 账号登录态，而不是 Gemini API key
 - 支持文字加一张或多张参考图
 - 参考 `awesome-nano-banana-pro-prompts` 优化提示词
-- 支持跨平台的 JSON prompt brief 工作流
+- 支持跨平台的 JSON prompt 工作流
 
 快速开始：
 
@@ -37,7 +37,7 @@ uv run ./scripts/optimize_prompt.py --goal "Create a crouching transparent-backg
 直接执行生成：
 
 ```bash
-uv run ./scripts/generate_image.py --prompt "your optimized prompt" --input "/path/to/source.png" --output "result.png"
+uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to/source.png" --output "result.png"
 ```
 
 要求：
@@ -51,8 +51,8 @@ English
 
 It works across Codex, Claude Code, OpenClaw, Antigravity, and similar platforms. The core workflow is:
 
-- turn a request into a structured JSON prompt brief
-- generate an optimized natural-language Nano Banana prompt
+- turn a request into a final executable JSON prompt
+- send that JSON directly to Nano Banana
 - directly run Gemini Web generation in supported environments
 
 Simplest install
@@ -71,7 +71,7 @@ Features:
 - Uses Google account authentication instead of a Gemini API key
 - Supports text plus one or multiple reference images
 - Optimizes prompts using patterns inspired by `awesome-nano-banana-pro-prompts`
-- Provides a cross-platform JSON prompt brief workflow
+- Provides a cross-platform JSON prompt workflow
 
 Quick start:
 
@@ -82,7 +82,7 @@ uv run ./scripts/optimize_prompt.py --goal "Create a crouching transparent-backg
 Direct generation:
 
 ```bash
-uv run ./scripts/generate_image.py --prompt "your optimized prompt" --input "/path/to/source.png" --output "result.png"
+uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to/source.png" --output "result.png"
 ```
 
 Requirements:

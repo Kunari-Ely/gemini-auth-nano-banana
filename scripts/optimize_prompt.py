@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Build a Nano Banana-style JSON prompt brief and final prompt."""
+"""Build a Nano Banana-style JSON prompt for direct execution."""
 
 from __future__ import annotations
 
@@ -19,58 +19,46 @@ def parse_reference(raw: str) -> dict[str, str]:
     return {"path": str(path), "role": role.strip() or "base"}
 
 
-def build_prompt(spec: dict) -> str:
-    intent = spec["intent"]
-    constraints = spec["constraints"]
-    render = spec["render"]
-    references = spec["references"]
-
-    parts: list[str] = []
-
-    if references:
-        role_bits = [f"{ref['role']} reference image" for ref in references]
-        parts.append(
-            "Use the provided "
-            + ", ".join(role_bits)
-            + " as strict reference material."
-        )
-
-    parts.append(intent["goal"].strip().rstrip(".") + ".")
-
-    if intent["subject"]:
-        parts.append(f"Main subject: {intent['subject']}.")
-    if intent["use_case"]:
-        parts.append(f"Use case: {intent['use_case']}.")
-    if intent["style"]:
-        parts.append(f"Style: {intent['style']}.")
-
-    must_keep = constraints["must_keep"]
-    if must_keep:
-        parts.append("Preserve: " + ", ".join(must_keep) + ".")
-
-    if render["composition"]:
-        parts.append(f"Composition: {render['composition']}.")
-    if render["lighting"]:
-        parts.append(f"Lighting: {render['lighting']}.")
-    if render["camera"]:
-        parts.append(f"Camera or framing: {render['camera']}.")
-
-    if constraints["background"]:
-        parts.append(f"Background: {constraints['background']}.")
-    if constraints["aspect_ratio"] and constraints["aspect_ratio"] != "auto":
-        parts.append(f"Aspect ratio: {constraints['aspect_ratio']}.")
-
-    avoid = constraints["avoid"]
-    if avoid:
-        parts.append("Avoid: " + ", ".join(avoid) + ".")
-
-    parts.append(f"Output {render['output_count']} image.")
-    return " ".join(part.strip() for part in parts if part.strip())
+def build_prompt_json(args: argparse.Namespace) -> dict:
+    references = [parse_reference(item) for item in args.reference]
+    return {
+        "meta": {
+            "format": "nano-banana-json-prompt",
+            "version": "1.0",
+            "source": "gemini-auth-nano-banana",
+            "inspired_by": "YouMind-OpenLab/awesome-nano-banana-pro-prompts",
+            "task_type": args.task_type,
+        },
+        "intent": {
+            "goal": args.goal,
+            "use_case": args.use_case,
+            "style": args.style,
+            "subject": args.subject,
+        },
+        "input_images": references,
+        "instructions": {
+            "identity_preservation": args.must_keep,
+            "composition": args.composition,
+            "lighting": args.lighting,
+            "camera": args.camera,
+            "background": args.background,
+            "aspect_ratio": args.aspect_ratio,
+        },
+        "constraints": {
+            "must_keep": args.must_keep,
+            "avoid": args.avoid,
+        },
+        "output": {
+            "count": args.output_count,
+            "format": args.output_format,
+            "background": args.background or "unspecified",
+        },
+    }
 
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate a JSON prompt brief and optimized prompt for Nano Banana workflows."
+        description="Generate a final JSON prompt for Nano Banana workflows."
     )
     parser.add_argument("--goal", required=True, help="Short outcome statement.")
     parser.add_argument("--subject", default="", help="Main subject description.")
@@ -112,45 +100,27 @@ def make_parser() -> argparse.ArgumentParser:
         help="Expected number of images.",
     )
     parser.add_argument(
+        "--output-format",
+        default="png",
+        help="Target output format metadata.",
+    )
+    parser.add_argument(
         "--output-json",
-        help="Optional file path for writing the JSON brief.",
+        help="Optional file path for writing the final JSON prompt.",
     )
     return parser
 
 
 def main() -> int:
     args = make_parser().parse_args()
+    prompt_json = build_prompt_json(args)
+    rendered = json.dumps(prompt_json, ensure_ascii=False, indent=2)
 
-    spec = {
-        "model_family": "nano-banana",
-        "task_type": args.task_type,
-        "intent": {
-            "goal": args.goal,
-            "use_case": args.use_case,
-            "style": args.style,
-            "subject": args.subject,
-        },
-        "references": [parse_reference(item) for item in args.reference],
-        "constraints": {
-            "must_keep": args.must_keep,
-            "avoid": args.avoid,
-            "background": args.background,
-            "aspect_ratio": args.aspect_ratio,
-        },
-        "render": {
-            "composition": args.composition,
-            "lighting": args.lighting,
-            "camera": args.camera,
-            "output_count": args.output_count,
-        },
-    }
-    spec["prompt"] = build_prompt(spec)
-
-    rendered = json.dumps(spec, ensure_ascii=False, indent=2)
     if args.output_json:
         output_path = Path(args.output_json).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered + "\n", encoding="utf-8")
+
     print(rendered)
     return 0
 
