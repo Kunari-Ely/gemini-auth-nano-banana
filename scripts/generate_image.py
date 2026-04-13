@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["gemini-webapi>=1.19", "browser-cookie3"]
+# dependencies = ["gemini-webapi>=1.19", "browser-cookie3", "websockets"]
 # ///
 """Generate an edited image from one or more source images via Gemini Web."""
 
@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
+import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from tempfile import mkdtemp
 
 from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
@@ -26,6 +33,27 @@ BROWSER_PROCESSES = {
     "chrome": "chrome",
     "edge": "msedge",
 }
+BROWSER_EXECUTABLES = {
+    "chrome": [
+        Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+    ],
+    "edge": [
+        Path(os.environ.get("PROGRAMFILES", "")) / "Microsoft/Edge/Application/msedge.exe",
+        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/Edge/Application/msedge.exe",
+    ],
+}
+BROWSER_USER_DATA_DIRS = {
+    "chrome": Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/User Data",
+    "edge": Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/Edge/User Data",
+}
+BROWSER_DEBUG_PORTS = {
+    "chrome": 9222,
+    "edge": 9223,
+}
+TEMP_BROWSER_DIRS: list[Path] = []
 
 
 def close_browser_process(browser_name: str) -> None:
@@ -42,6 +70,95 @@ def close_browser_process(browser_name: str) -> None:
     except Exception:
         pass
     time.sleep(1)
+
+
+def _cleanup_temp_browser_dirs() -> None:
+    for path in TEMP_BROWSER_DIRS:
+        if path.exists():
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+
+
+atexit.register(_cleanup_temp_browser_dirs)
+
+
+def get_browser_executable(browser_name: str) -> Path | None:
+    for candidate in BROWSER_EXECUTABLES.get(browser_name, []):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def get_browser_profile(browser_name: str) -> str:
+    base = BROWSER_USER_DATA_DIRS.get(browser_name)
+    if not base:
+        return "Default"
+    cookie_profile = find_profile_with_google_cookies(browser_name)
+    if cookie_profile:
+        return cookie_profile
+    local_state = base / "Local State"
+    if not local_state.exists():
+        return "Default"
+    try:
+        data = json.loads(local_state.read_text(encoding="utf-8"))
+    except Exception:
+        return "Default"
+    return data.get("profile", {}).get("last_used") or "Default"
+
+
+def find_profile_with_google_cookies(browser_name: str) -> str | None:
+    base = BROWSER_USER_DATA_DIRS.get(browser_name)
+    if not base or not base.exists():
+        return None
+
+    candidates = []
+    for entry in base.iterdir():
+        if entry.is_dir() and (entry.name == "Default" or entry.name.startswith("Profile")):
+            candidates.append(entry)
+
+    for profile_dir in sorted(candidates, key=lambda item: (item.name != "Default", item.name)):
+        cookie_db = profile_dir / "Network" / "Cookies"
+        if not cookie_db.exists():
+            continue
+        temp_copy = Path(os.environ.get("TEMP", str(Path.home()))) / f"{browser_name}-{profile_dir.name}-cookies.db"
+        try:
+            shutil.copy2(cookie_db, temp_copy)
+            conn = sqlite3.connect(temp_copy)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                select 1
+                from cookies
+                where host_key = '.google.com'
+                  and name in ('__Secure-1PSID', '__Secure-1PSIDTS')
+                limit 1
+                """
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return profile_dir.name
+        except Exception:
+            continue
+        finally:
+            if temp_copy.exists():
+                try:
+                    temp_copy.unlink()
+                except Exception:
+                    pass
+    return None
+
+
+def get_preferred_browser() -> str | None:
+    for browser_name in BROWSER_SOURCES:
+        if find_profile_with_google_cookies(browser_name):
+            return browser_name
+    for browser_name in BROWSER_SOURCES:
+        if get_browser_executable(browser_name):
+            return browser_name
+    return None
 
 
 def _extract_cookie_values(force_close: bool = False) -> dict[str, str] | None:
@@ -79,8 +196,130 @@ def _extract_cookie_values(force_close: bool = False) -> dict[str, str] | None:
     return None
 
 
+def _load_json_url(url: str) -> object | None:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+
+async def _get_cdp_cookies(ws_url: str) -> dict[str, str] | None:
+    import websockets
+
+    async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
+        await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+        await ws.send(json.dumps({"id": 2, "method": "Network.getAllCookies"}))
+        values: dict[str, str] = {}
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            payload = json.loads(raw)
+            if payload.get("id") != 2:
+                continue
+            cookies = payload.get("result", {}).get("cookies", [])
+            for cookie in cookies:
+                if cookie.get("name") == "__Secure-1PSID":
+                    values["secure_1psid"] = cookie.get("value", "")
+                elif cookie.get("name") == "__Secure-1PSIDTS":
+                    values["secure_1psidts"] = cookie.get("value", "")
+            return values if values.get("secure_1psid") else None
+
+
+def _launch_debug_browser(browser_name: str, open_login: bool) -> subprocess.Popen[str] | None:
+    executable = get_browser_executable(browser_name)
+    user_data_dir = BROWSER_USER_DATA_DIRS.get(browser_name)
+    if not executable or not user_data_dir or not user_data_dir.exists():
+        return None
+
+    profile = get_browser_profile(browser_name)
+    temp_user_data = prepare_temp_user_data(browser_name, profile)
+    if not temp_user_data:
+        return None
+    port = BROWSER_DEBUG_PORTS[browser_name]
+    args = [
+        str(executable),
+        f"--remote-debugging-port={port}",
+        "--remote-allow-origins=*",
+        f"--user-data-dir={temp_user_data}",
+        f"--profile-directory={profile}",
+        LOGIN_URL,
+    ]
+    return subprocess.Popen(args)
+
+
+def prepare_temp_user_data(browser_name: str, profile: str) -> Path | None:
+    source_base = BROWSER_USER_DATA_DIRS.get(browser_name)
+    if not source_base or not source_base.exists():
+        return None
+
+    temp_base = Path(mkdtemp(prefix=f"gemini-{browser_name}-"))
+    TEMP_BROWSER_DIRS.append(temp_base)
+
+    local_state = source_base / "Local State"
+    if local_state.exists():
+        shutil.copy2(local_state, temp_base / "Local State")
+
+    source_profile = source_base / profile
+    target_profile = temp_base / profile
+    (target_profile / "Network").mkdir(parents=True, exist_ok=True)
+
+    for name in ["Preferences", "Secure Preferences"]:
+        src = source_profile / name
+        if src.exists():
+            try:
+                shutil.copy2(src, target_profile / name)
+            except Exception:
+                pass
+
+    for name in ["Cookies", "Cookies-journal"]:
+        src = source_profile / "Network" / name
+        if src.exists():
+            try:
+                shutil.copy2(src, target_profile / "Network" / name)
+            except Exception:
+                pass
+
+    return temp_base
+
+
+def _get_debug_ws_url(browser_name: str) -> str | None:
+    port = BROWSER_DEBUG_PORTS[browser_name]
+    for _ in range(20):
+        targets = _load_json_url(f"http://127.0.0.1:{port}/json/list")
+        if isinstance(targets, list):
+            for target in targets:
+                if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
+                    return target["webSocketDebuggerUrl"]
+        time.sleep(1)
+    return None
+
+
+def extract_cookies_via_debug_browser(browser_name: str, open_login: bool = False) -> dict[str, str] | None:
+    close_browser_process(browser_name)
+    proc = _launch_debug_browser(browser_name, open_login=open_login)
+    if not proc:
+        return None
+
+    ws_url = _get_debug_ws_url(browser_name)
+    if not ws_url:
+        return None
+
+    try:
+        values = asyncio.run(_get_cdp_cookies(ws_url))
+    except Exception:
+        return None
+    if values:
+        values["browser"] = browser_name
+    return values
+
+
 def persist_browser_cookies(force_close: bool = False) -> dict[str, str] | None:
     values = _extract_cookie_values(force_close=force_close)
+    if not values:
+        for browser_name in BROWSER_SOURCES:
+            values = extract_cookies_via_debug_browser(browser_name, open_login=False)
+            if values:
+                break
     if not values:
         return None
 
@@ -97,11 +336,23 @@ def launch_login_flow() -> dict[str, str] | None:
         "Gemini login is missing or expired. Opening the Gemini login page in your browser...",
         file=sys.stderr,
     )
-    webbrowser.open(LOGIN_URL)
-    input(
-        "After you finish signing into Gemini in Chrome or Edge, press Enter here to continue..."
+    cookies = None
+    preferred_browser = get_preferred_browser()
+    if preferred_browser and get_browser_executable(preferred_browser):
+        extract_cookies_via_debug_browser(preferred_browser, open_login=True)
+    else:
+        webbrowser.open(LOGIN_URL)
+
+    print(
+        "Waiting for Gemini login to appear in Chrome or Edge...",
+        file=sys.stderr,
     )
-    cookies = persist_browser_cookies(force_close=True)
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        cookies = persist_browser_cookies(force_close=True)
+        if cookies:
+            break
+        time.sleep(3)
     if cookies:
         browser_name = cookies.get("browser", "browser")
         print(
