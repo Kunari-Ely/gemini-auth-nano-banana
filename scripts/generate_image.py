@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,58 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
+LOGIN_URL = "https://gemini.google.com/app"
+
+
+def _extract_cookie_values() -> dict[str, str] | None:
+    try:
+        import browser_cookie3
+    except Exception:
+        return None
+
+    try:
+        jar = browser_cookie3.chrome(domain_name=".google.com")
+    except Exception:
+        return None
+
+    values: dict[str, str] = {}
+    for cookie in jar:
+        if cookie.name == "__Secure-1PSID":
+            values["secure_1psid"] = cookie.value
+        elif cookie.name == "__Secure-1PSIDTS":
+            values["secure_1psidts"] = cookie.value
+
+    if values.get("secure_1psid"):
+        return values
+    return None
+
+
+def persist_browser_cookies() -> dict[str, str] | None:
+    values = _extract_cookie_values()
+    if not values:
+        return None
+
+    COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    COOKIE_PATH.write_text(
+        json.dumps(values, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return values
+
+
+def launch_login_flow() -> dict[str, str] | None:
+    print(
+        "Gemini login is missing or expired. Opening the Gemini login page in your browser...",
+        file=sys.stderr,
+    )
+    webbrowser.open(LOGIN_URL)
+    input(
+        "After you finish signing into Gemini in Chrome, press Enter here to continue..."
+    )
+    cookies = persist_browser_cookies()
+    if cookies:
+        print(f"Saved Gemini login cookies to {COOKIE_PATH}", file=sys.stderr)
+    return cookies
 
 
 def make_client() -> GeminiClient:
@@ -28,7 +81,28 @@ def make_client() -> GeminiClient:
                 secure_1psid=secure_1psid,
                 secure_1psidts=cookies.get("secure_1psidts", ""),
             )
+    browser_cookies = persist_browser_cookies()
+    if browser_cookies:
+        return GeminiClient(
+            secure_1psid=browser_cookies["secure_1psid"],
+            secure_1psidts=browser_cookies.get("secure_1psidts", ""),
+        )
     return GeminiClient()
+
+
+def looks_like_auth_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    auth_markers = [
+        "login",
+        "sign in",
+        "unauthorized",
+        "forbidden",
+        "auth",
+        "credential",
+        "cookie",
+        "1psid",
+    ]
+    return any(marker in text for marker in auth_markers)
 
 
 def resolve_inputs(inputs: list[str]) -> list[str]:
@@ -151,15 +225,33 @@ def main() -> int:
         if not prompt:
             raise ValueError("Provide --prompt or --prompt-json.")
         inputs = resolve_inputs(args.input)
-        final_path = asyncio.run(
-            generate_image(
-                prompt,
-                inputs,
-                output,
-                model=Model[args.model.upper()],
-                delete_chat=not args.keep_chat,
+        try:
+            final_path = asyncio.run(
+                generate_image(
+                    prompt,
+                    inputs,
+                    output,
+                    model=Model[args.model.upper()],
+                    delete_chat=not args.keep_chat,
+                )
             )
-        )
+        except Exception as exc:
+            if not looks_like_auth_error(exc):
+                raise
+            cookies = launch_login_flow()
+            if not cookies:
+                raise RuntimeError(
+                    "Gemini login was not detected after opening the login page."
+                ) from exc
+            final_path = asyncio.run(
+                generate_image(
+                    prompt,
+                    inputs,
+                    output,
+                    model=Model[args.model.upper()],
+                    delete_chat=not args.keep_chat,
+                )
+            )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

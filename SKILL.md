@@ -107,6 +107,8 @@ Use the execution script only when the current machine can access Gemini Web thr
 
 The execution step uses the Gemini web session from Chrome or a local cookies file. It does not use Google AI Studio or Gemini API keys.
 
+If the script detects that Gemini login is missing or expired, it opens the Gemini login page in the default browser, waits for the user to finish signing in, then saves the refreshed login cookies to the local cookies file and retries the request automatically.
+
 If browser cookies are unavailable, create:
 
 ```bash
