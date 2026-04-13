@@ -28,6 +28,7 @@ If the agent supports GitHub-based skill installation, this is the easiest setup
 - Optimizes prompts using patterns inspired by `awesome-nano-banana-pro-prompts`
 - Provides a cross-platform JSON prompt workflow
 - Supports both Chrome and Edge browser sessions
+- Uses the external extractor at `C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py` first for modern Chromium cookie encryption, then falls back to legacy browser-cookie extraction
 - Automatically opens the Gemini login page and saves local cookies when auth expires
 - Performs a strong auth preflight check before each generation
 - Automatically closes Chrome or Edge when cookie extraction requires it
@@ -51,4 +52,4 @@ uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to
 - `uv` installed locally
 - For direct Gemini Web execution, a logged-in `gemini.google.com` session in Chrome or Edge, or a valid cookies file
 
-Before each generation, the script runs a strong Gemini auth preflight check. If the session has expired, it opens the login page, lets the user sign in with Chrome or Edge, saves local cookies, and retries automatically. If cookie extraction requires the browser to be closed, it automatically closes Chrome or Edge first.
+Before each generation, the script runs a strong Gemini auth preflight check. For newer Chrome and Edge builds, it first calls `C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py` to decrypt local Gemini cookies, then falls back to legacy extraction methods only if needed. If the session has expired, it opens the login page, lets the user sign in with Chrome or Edge, saves local cookies, and retries automatically. If cookie extraction requires the browser to be closed, it automatically closes Chrome or Edge first.

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["gemini-webapi>=1.19", "browser-cookie3", "websockets"]
+# dependencies = ["gemini-webapi>=1.19", "browser-cookie3", "websockets", "pywin32", "cryptography"]
 # ///
 """Generate an edited image from one or more source images via Gemini Web."""
 
@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import types
 import urllib.error
 import urllib.request
 import webbrowser
@@ -27,6 +28,7 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
+EXTERNAL_COOKIE_EXTRACTOR = Path(r"C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py")
 LOGIN_URL = "https://gemini.google.com/app"
 BROWSER_SOURCES = ("chrome", "edge")
 BROWSER_PROCESSES = {
@@ -54,6 +56,7 @@ BROWSER_DEBUG_PORTS = {
     "edge": 9223,
 }
 TEMP_BROWSER_DIRS: list[Path] = []
+_EXTERNAL_COOKIE_EXTRACTOR_MODULE = None
 
 
 def close_browser_process(browser_name: str) -> None:
@@ -158,6 +161,137 @@ def get_preferred_browser() -> str | None:
     for browser_name in BROWSER_SOURCES:
         if get_browser_executable(browser_name):
             return browser_name
+    return None
+
+
+def load_external_cookie_extractor():
+    global _EXTERNAL_COOKIE_EXTRACTOR_MODULE
+    if _EXTERNAL_COOKIE_EXTRACTOR_MODULE is not None:
+        return _EXTERNAL_COOKIE_EXTRACTOR_MODULE
+    if not EXTERNAL_COOKIE_EXTRACTOR.is_file():
+        return None
+    try:
+        source = EXTERNAL_COOKIE_EXTRACTOR.read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        source = source.replace(
+            "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
+            "pass  # stdout handling disabled by gemini-auth-nano-banana",
+        )
+        module = types.ModuleType("gemini_cookie_extractor")
+        module.__file__ = str(EXTERNAL_COOKIE_EXTRACTOR)
+        exec(compile(source, str(EXTERNAL_COOKIE_EXTRACTOR), "exec"), module.__dict__)
+        _EXTERNAL_COOKIE_EXTRACTOR_MODULE = module
+        return module
+    except Exception:
+        return None
+
+
+def copy_cookie_db(source: Path, target: Path) -> bool:
+    try:
+        shutil.copy2(source, target)
+        return True
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            ["cmd", "/c", "copy", "/Y", str(source), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            [
+                "robocopy",
+                str(source.parent),
+                str(target.parent),
+                source.name,
+                "/R:1",
+                "/W:0",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    return target.exists()
+
+
+def extract_cookies_via_external_helper(browser_name: str) -> dict[str, str] | None:
+    module = load_external_cookie_extractor()
+    user_data_dir = BROWSER_USER_DATA_DIRS.get(browser_name)
+    if not module or not user_data_dir or not user_data_dir.exists():
+        return None
+
+    profile = get_browser_profile(browser_name)
+    cookie_db = user_data_dir / profile / "Network" / "Cookies"
+    local_state = user_data_dir / "Local State"
+    if not cookie_db.exists() or not local_state.exists():
+        return None
+
+    try:
+        module.EDGE_USER_DATA = str(user_data_dir)
+        module.LOCAL_STATE_PATH = str(local_state)
+        module.COOKIE_DB_PATH = str(cookie_db)
+    except Exception:
+        return None
+
+    try:
+        v20_key = module.get_v20_key()
+    except Exception:
+        return None
+    if not v20_key:
+        return None
+
+    temp_dir = Path(mkdtemp(prefix=f"gemini-cookie-{browser_name}-"))
+    try:
+        temp_db = temp_dir / "Cookies"
+        if not copy_cookie_db(cookie_db, temp_db):
+            return None
+
+        conn = sqlite3.connect(temp_db)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                select name, encrypted_value
+                from cookies
+                where host_key like '%.google.com%'
+                  and name in ('__Secure-1PSID', '__Secure-1PSIDTS')
+                order by name
+                """
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        values: dict[str, str] = {}
+        for name, encrypted_value in rows:
+            try:
+                value = module.decrypt_cookie(encrypted_value, v20_key)
+            except Exception:
+                continue
+            if not value or str(value).startswith("["):
+                continue
+            if name == "__Secure-1PSID":
+                values["secure_1psid"] = value
+            elif name == "__Secure-1PSIDTS":
+                values["secure_1psidts"] = value
+
+        if values.get("secure_1psid"):
+            values["browser"] = browser_name
+            values["profile"] = profile
+            return values
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
     return None
 
 
@@ -314,7 +448,17 @@ def extract_cookies_via_debug_browser(browser_name: str, open_login: bool = Fals
 
 
 def persist_browser_cookies(force_close: bool = False) -> dict[str, str] | None:
-    values = _extract_cookie_values(force_close=force_close)
+    values = None
+
+    for browser_name in BROWSER_SOURCES:
+        if force_close:
+            close_browser_process(browser_name)
+        values = extract_cookies_via_external_helper(browser_name)
+        if values:
+            break
+
+    if not values:
+        values = _extract_cookie_values(force_close=force_close)
     if not values:
         for browser_name in BROWSER_SOURCES:
             values = extract_cookies_via_debug_browser(browser_name, open_login=False)
@@ -488,6 +632,67 @@ async def generate_image(
                 pass
 
 
+def should_retry_generation(exc: Exception) -> bool:
+    if looks_like_auth_error(exc):
+        return False
+
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+
+    message = " ".join(
+        part for part in [str(exc), repr(exc), exc.__class__.__name__] if part
+    ).lower()
+    retry_markers = (
+        "timeout",
+        "timed out",
+        "stream",
+        "parsing interrupted",
+        "incomplete frame",
+        "connection",
+        "aborted",
+        "queue",
+        "websocket",
+        "unexpected eof",
+        "eof",
+    )
+    return any(marker in message for marker in retry_markers) or not str(exc).strip()
+
+
+def run_generation_with_retries(
+    prompt: str,
+    inputs: list[str],
+    output: str,
+    *,
+    model: Model | str = Model.UNSPECIFIED,
+    delete_chat: bool = True,
+    max_attempts: int = 3,
+) -> Path:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return asyncio.run(
+                generate_image(
+                    prompt,
+                    inputs,
+                    output,
+                    model=model,
+                    delete_chat=delete_chat,
+                )
+            )
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= max_attempts or not should_retry_generation(exc):
+                raise
+            wait_seconds = min(12, attempt * 4)
+            print(
+                f"Transient Gemini generation failure on attempt {attempt}/{max_attempts}: {exc or exc.__class__.__name__}. Retrying in {wait_seconds}s...",
+                file=sys.stderr,
+            )
+            time.sleep(wait_seconds)
+    assert last_exc is not None
+    raise last_exc
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate an edited image from source images via Gemini Web."
@@ -539,14 +744,12 @@ def main() -> int:
         inputs = resolve_inputs(args.input)
         preflight_auth_check()
         try:
-            final_path = asyncio.run(
-                generate_image(
-                    prompt,
-                    inputs,
-                    output,
-                    model=Model[args.model.upper()],
-                    delete_chat=not args.keep_chat,
-                )
+            final_path = run_generation_with_retries(
+                prompt,
+                inputs,
+                output,
+                model=Model[args.model.upper()],
+                delete_chat=not args.keep_chat,
             )
         except Exception as exc:
             if not looks_like_auth_error(exc):
@@ -556,14 +759,12 @@ def main() -> int:
                 raise RuntimeError(
                     "Gemini login was not detected after opening the login page."
                 ) from exc
-            final_path = asyncio.run(
-                generate_image(
-                    prompt,
-                    inputs,
-                    output,
-                    model=Model[args.model.upper()],
-                    delete_chat=not args.keep_chat,
-                )
+            final_path = run_generation_with_retries(
+                prompt,
+                inputs,
+                output,
+                model=Model[args.model.upper()],
+                delete_chat=not args.keep_chat,
             )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
