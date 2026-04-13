@@ -29,6 +29,7 @@ from gemini_webapi.constants import Model
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
 EXTERNAL_COOKIE_EXTRACTOR = Path(__file__).with_name("extract_gemini_cookies.py")
+EXTERNAL_COOKIE_OUTPUT = Path(__file__).with_name("gemini_cookies.json")
 LOGIN_URL = "https://gemini.google.com/app"
 BROWSER_SOURCES = ("chrome", "edge")
 BROWSER_PROCESSES = {
@@ -262,11 +263,10 @@ def extract_cookies_via_external_helper(browser_name: str) -> dict[str, str] | N
             cur = conn.cursor()
             cur.execute(
                 """
-                select name, encrypted_value
+                select host_key, name, encrypted_value
                 from cookies
-                where host_key like '%.google.com%'
-                  and name in ('__Secure-1PSID', '__Secure-1PSIDTS')
-                order by name
+                where host_key like '%google.com%'
+                order by host_key, name
                 """
             )
             rows = cur.fetchall()
@@ -274,13 +274,15 @@ def extract_cookies_via_external_helper(browser_name: str) -> dict[str, str] | N
             conn.close()
 
         values: dict[str, str] = {}
-        for name, encrypted_value in rows:
+        cookie_map: dict[str, str] = {}
+        for _host_key, name, encrypted_value in rows:
             try:
                 value = module.decrypt_cookie(encrypted_value, v20_key)
             except Exception:
                 continue
             if not value or str(value).startswith("["):
                 continue
+            cookie_map[name] = value
             if name == "__Secure-1PSID":
                 values["secure_1psid"] = value
             elif name == "__Secure-1PSIDTS":
@@ -289,10 +291,108 @@ def extract_cookies_via_external_helper(browser_name: str) -> dict[str, str] | N
         if values.get("secure_1psid"):
             values["browser"] = browser_name
             values["profile"] = profile
+            values["cookies"] = cookie_map
             return values
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
     return None
+
+
+def build_google_cookie_map(payload: dict[str, object] | None) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+
+    cookie_map: dict[str, str] = {}
+
+    raw_cookies = payload.get("cookies")
+    if isinstance(raw_cookies, dict):
+        for name, value in raw_cookies.items():
+            if value:
+                cookie_map[str(name)] = str(value)
+
+    raw_login = payload.get("login_cookies")
+    if isinstance(raw_login, dict):
+        for name, value in raw_login.items():
+            if value:
+                cookie_map[str(name)] = str(value)
+
+    raw_gemini = payload.get("gemini_cookies")
+    if isinstance(raw_gemini, dict):
+        for name, value in raw_gemini.items():
+            if value:
+                cookie_map[str(name)] = str(value)
+
+    secure_1psid = payload.get("secure_1psid")
+    secure_1psidts = payload.get("secure_1psidts")
+    if secure_1psid:
+        cookie_map["__Secure-1PSID"] = str(secure_1psid)
+    if secure_1psidts:
+        cookie_map["__Secure-1PSIDTS"] = str(secure_1psidts)
+
+    return cookie_map
+
+
+def sync_gemini_webapi_cache(payload: dict[str, object] | None) -> None:
+    cookie_map = build_google_cookie_map(payload)
+    secure_1psid = cookie_map.get("__Secure-1PSID")
+    if not secure_1psid:
+        return
+
+    try:
+        from curl_cffi.requests import Cookies
+        from gemini_webapi.utils.rotate_1psidts import save_cookies
+    except Exception:
+        return
+
+    jar = Cookies()
+    for name, value in cookie_map.items():
+        if value:
+            jar.set(name, value, domain=".google.com", path="/")
+
+    try:
+        save_cookies(jar, verbose=False)
+    except Exception:
+        pass
+
+
+def normalize_cookie_payload(values: dict[str, object]) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "secure_1psid": values.get("secure_1psid", ""),
+        "secure_1psidts": values.get("secure_1psidts", ""),
+    }
+    if values.get("browser"):
+        payload["browser"] = values["browser"]
+    if values.get("profile"):
+        payload["profile"] = values["profile"]
+
+    cookie_map = build_google_cookie_map(values)
+    if cookie_map:
+        payload["cookies"] = cookie_map
+    return payload
+
+
+def load_local_cookie_payload() -> dict[str, object] | None:
+    if not COOKIE_PATH.exists():
+        return None
+    try:
+        payload = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if "cookies" not in payload and EXTERNAL_COOKIE_OUTPUT.exists():
+        try:
+            external_payload = json.loads(
+                EXTERNAL_COOKIE_OUTPUT.read_text(encoding="utf-8")
+            )
+        except Exception:
+            external_payload = None
+        external_cookie_map = build_google_cookie_map(external_payload)
+        local_psid = payload.get("secure_1psid")
+        external_psid = external_cookie_map.get("__Secure-1PSID")
+        if external_cookie_map and local_psid and local_psid == external_psid:
+            payload["cookies"] = external_cookie_map
+    return payload
 
 
 def _extract_cookie_values(force_close: bool = False) -> dict[str, str] | None:
@@ -467,12 +567,15 @@ def persist_browser_cookies(force_close: bool = False) -> dict[str, str] | None:
     if not values:
         return None
 
+    payload = normalize_cookie_payload(values)
+    sync_gemini_webapi_cache(payload)
+
     COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
     COOKIE_PATH.write_text(
-        json.dumps(values, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    return values
+    return payload
 
 
 def launch_login_flow() -> dict[str, str] | None:
@@ -507,20 +610,19 @@ def launch_login_flow() -> dict[str, str] | None:
 
 
 def make_client() -> GeminiClient:
-    if COOKIE_PATH.exists():
-        cookies = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
-        secure_1psid = cookies.get("secure_1psid")
-        if secure_1psid:
-            return GeminiClient(
-                secure_1psid=secure_1psid,
-                secure_1psidts=cookies.get("secure_1psidts", ""),
-            )
     browser_cookies = persist_browser_cookies(force_close=True)
     if browser_cookies:
-        return GeminiClient(
-            secure_1psid=browser_cookies["secure_1psid"],
-            secure_1psidts=browser_cookies.get("secure_1psidts", ""),
-        )
+        client = GeminiClient()
+        client.cookies = build_google_cookie_map(browser_cookies)
+        return client
+    cookies = load_local_cookie_payload()
+    if cookies:
+        cookie_map = build_google_cookie_map(cookies)
+        if cookie_map.get("__Secure-1PSID"):
+            sync_gemini_webapi_cache(cookies)
+            client = GeminiClient()
+            client.cookies = cookie_map
+            return client
     return GeminiClient()
 
 
@@ -540,16 +642,13 @@ def looks_like_auth_error(exc: Exception) -> bool:
 
 
 def preflight_auth_check() -> dict[str, str] | None:
-    if COOKIE_PATH.exists():
-        try:
-            cookies = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            cookies = {}
-        if cookies.get("secure_1psid"):
-            return cookies
-
     cookies = persist_browser_cookies(force_close=True)
     if cookies:
+        return cookies
+
+    cookies = load_local_cookie_payload()
+    if cookies and build_google_cookie_map(cookies).get("__Secure-1PSID"):
+        sync_gemini_webapi_cache(cookies)
         return cookies
 
     cookies = launch_login_flow()
