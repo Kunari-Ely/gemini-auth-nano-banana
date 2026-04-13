@@ -2,7 +2,7 @@
 
 中文
 
-`gemini-auth-nano-banana` 是一个通用 agent skill，既能帮助 AI 为 Gemini / Nano Banana 优化图像提示词，也能在本地环境支持时，直接通过已登录的 Gemini Web 会话调用 Nano Banana 风格的图像编辑与生成能力，不需要 API key。
+`gemini-auth-nano-banana` 是一个通用 agent skill，既能帮助 AI 为 Gemini / Nano Banana 优化图像提示词，也能在本地环境支持时，直接通过浏览器（默认chrome）上已登录的 Gemini Web 会话调用 Nano Banana 风格的图像编辑与生成能力，不需要 API key。
 
 它适用于 Codex、Claude Code、OpenClaw、Antigravity 等平台，核心流程是：
 
@@ -15,7 +15,7 @@
 直接让你的 AI agent 安装这个仓库即可，例如对支持仓库安装的 agent 说：
 
 ```text
-Install the skill from https://github.com/Kunari-Ely/gemini-auth-nano-banana
+安装这个skill： https://github.com/Kunari-Ely/gemini-auth-nano-banana
 ```
 
 如果 agent 支持从 GitHub 仓库直接安装 skill，这是最简单的方式。
@@ -23,7 +23,7 @@ Install the skill from https://github.com/Kunari-Ely/gemini-auth-nano-banana
 功能：
 
 - 直接调用 Gemini Web 的 Nano Banana 风格图像能力
-- 使用 Google 账号登录态，而不是 Gemini API key
+- 使用浏览器（默认Chrome）的 Google 账号登录态，而不是 Gemini API key
 - 支持文字加一张或多张参考图
 - 参考 `awesome-nano-banana-pro-prompts` 优化提示词
 - 支持跨平台的 JSON prompt brief 工作流
