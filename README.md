@@ -30,7 +30,6 @@ Install the skill from https://github.com/Kunari-Ely/gemini-auth-nano-banana
 - 同步支持 Chrome 和 Edge 浏览器登录态
 - 如果登录失效，会自动打开 Gemini 登录页并在登录后保存本地 cookies
 - 每次生成前都会执行登录态强校验
-- 读取 cookies 需要时会自动关闭 Chrome 或 Edge
 
 快速开始：
 
