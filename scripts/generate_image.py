@@ -28,7 +28,7 @@ from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
-EXTERNAL_COOKIE_EXTRACTOR = Path(r"C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py")
+EXTERNAL_COOKIE_EXTRACTOR = Path(__file__).with_name("extract_gemini_cookies.py")
 LOGIN_URL = "https://gemini.google.com/app"
 BROWSER_SOURCES = ("chrome", "edge")
 BROWSER_PROCESSES = {

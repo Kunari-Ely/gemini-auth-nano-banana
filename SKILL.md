@@ -107,7 +107,7 @@ Use the execution script only when the current machine can access Gemini Web thr
 
 The execution step uses the Gemini web session from Chrome, Edge, or a local cookies file. It does not use Google AI Studio or Gemini API keys.
 
-Before each generation, the script performs a strong preflight auth check. For newer Chrome and Edge builds, it first calls `C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py` to handle the newer Chromium cookie encryption path, then falls back to legacy browser-cookie extraction only if needed. If no usable Gemini login is available, it opens the Gemini login page in the default browser, waits for the user to finish signing in through Chrome or Edge, then saves the refreshed login cookies to the local cookies file and retries automatically.
+Before each generation, the script performs a strong preflight auth check. For newer Chrome and Edge builds, it first calls the bundled `scripts/extract_gemini_cookies.py` helper to handle the newer Chromium cookie encryption path, then falls back to legacy browser-cookie extraction only if needed. If no usable Gemini login is available, it opens the Gemini login page in the default browser, waits for the user to finish signing in through Chrome or Edge, then saves the refreshed login cookies to the local cookies file and retries automatically.
 
 When browser cookie extraction requires the browser to be closed, the script automatically closes Chrome or Edge before reading cookies.
 

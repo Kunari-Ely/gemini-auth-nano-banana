@@ -28,7 +28,7 @@ Install the skill from https://github.com/Kunari-Ely/gemini-auth-nano-banana
 - 参考 `awesome-nano-banana-pro-prompts` 优化提示词
 - 支持跨平台的 JSON prompt 工作流
 - 同时支持 Chrome 和 Edge 浏览器登录态
-- 优先调用 `C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py` 处理新版 Chromium cookie 加密，失败时再回退到旧提取链路
+- 内置 `scripts/extract_gemini_cookies.py`，优先处理新版 Chromium cookie 加密，失败时再回退到旧提取链路
 - 如果登录失效，会自动打开 Gemini 登录页并在登录后保存本地 cookies
 - 每次生成前都会执行登录态强校验
 - 读取 cookies 需要时会自动关闭 Chrome 或 Edge
@@ -52,4 +52,4 @@ uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to
 - 本地已安装 `uv`
 - 若要直接调用 Gemini Web，本机需已在 Chrome 或 Edge 登录 `gemini.google.com`，或准备好有效 cookies 文件
 
-每次生成前，脚本都会先强校验 Gemini 登录态。对于新版 Chrome 和 Edge，脚本会先调用 `C:\Users\Administrator\Documents\coding\extract_gemini_cookies.py` 解密本地 Gemini cookies，必要时再回退到旧提取方式。如果登录失效，脚本会自动弹出登录页，让用户使用 Chrome 或 Edge 登录，随后保存本地 cookies 并自动重试。如需关闭浏览器才能读取 cookies，脚本也会自动处理。
+每次生成前，脚本都会先强校验 Gemini 登录态。对于新版 Chrome 和 Edge，脚本会先调用 skill 内置的 `scripts/extract_gemini_cookies.py` 解密本地 Gemini cookies，必要时再回退到旧提取方式。如果登录失效，脚本会自动弹出登录页，让用户使用 Chrome 或 Edge 登录，随后保存本地 cookies 并自动重试。如需关闭浏览器才能读取 cookies，脚本也会自动处理。
