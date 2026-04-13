@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gemini Auth Nano Banana"
+  short_description: "Cross-platform Nano Banana prompt skill"
+  default_prompt: "Use $gemini-auth-nano-banana to turn the request into a JSON prompt brief and an optimized Nano Banana prompt, then optionally execute it through a logged-in Gemini web session."
