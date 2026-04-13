@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import subprocess
 import sys
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -20,9 +22,29 @@ from gemini_webapi.constants import Model
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
 LOGIN_URL = "https://gemini.google.com/app"
 BROWSER_SOURCES = ("chrome", "edge")
+BROWSER_PROCESSES = {
+    "chrome": "chrome",
+    "edge": "msedge",
+}
 
 
-def _extract_cookie_values() -> dict[str, str] | None:
+def close_browser_process(browser_name: str) -> None:
+    process_name = BROWSER_PROCESSES.get(browser_name)
+    if not process_name:
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/IM", f"{process_name}.exe", "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+
+
+def _extract_cookie_values(force_close: bool = False) -> dict[str, str] | None:
     try:
         import browser_cookie3
     except Exception:
@@ -35,7 +57,14 @@ def _extract_cookie_values() -> dict[str, str] | None:
         try:
             jar = reader(domain_name=".google.com")
         except Exception:
-            continue
+            if force_close:
+                close_browser_process(browser_name)
+                try:
+                    jar = reader(domain_name=".google.com")
+                except Exception:
+                    continue
+            else:
+                continue
 
         values: dict[str, str] = {}
         for cookie in jar:
@@ -50,8 +79,8 @@ def _extract_cookie_values() -> dict[str, str] | None:
     return None
 
 
-def persist_browser_cookies() -> dict[str, str] | None:
-    values = _extract_cookie_values()
+def persist_browser_cookies(force_close: bool = False) -> dict[str, str] | None:
+    values = _extract_cookie_values(force_close=force_close)
     if not values:
         return None
 
@@ -72,7 +101,7 @@ def launch_login_flow() -> dict[str, str] | None:
     input(
         "After you finish signing into Gemini in Chrome or Edge, press Enter here to continue..."
     )
-    cookies = persist_browser_cookies()
+    cookies = persist_browser_cookies(force_close=True)
     if cookies:
         browser_name = cookies.get("browser", "browser")
         print(
@@ -91,7 +120,7 @@ def make_client() -> GeminiClient:
                 secure_1psid=secure_1psid,
                 secure_1psidts=cookies.get("secure_1psidts", ""),
             )
-    browser_cookies = persist_browser_cookies()
+    browser_cookies = persist_browser_cookies(force_close=True)
     if browser_cookies:
         return GeminiClient(
             secure_1psid=browser_cookies["secure_1psid"],
@@ -113,6 +142,28 @@ def looks_like_auth_error(exc: Exception) -> bool:
         "1psid",
     ]
     return any(marker in text for marker in auth_markers)
+
+
+def preflight_auth_check() -> dict[str, str] | None:
+    if COOKIE_PATH.exists():
+        try:
+            cookies = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cookies = {}
+        if cookies.get("secure_1psid"):
+            return cookies
+
+    cookies = persist_browser_cookies(force_close=True)
+    if cookies:
+        return cookies
+
+    cookies = launch_login_flow()
+    if cookies:
+        return cookies
+
+    raise RuntimeError(
+        "Gemini login validation failed. No usable Gemini Web cookies were found."
+    )
 
 
 def resolve_inputs(inputs: list[str]) -> list[str]:
@@ -235,6 +286,7 @@ def main() -> int:
         if not prompt:
             raise ValueError("Provide --prompt or --prompt-json.")
         inputs = resolve_inputs(args.input)
+        preflight_auth_check()
         try:
             final_path = asyncio.run(
                 generate_image(
