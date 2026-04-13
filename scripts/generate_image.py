@@ -19,6 +19,7 @@ from gemini_webapi.constants import Model
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
 LOGIN_URL = "https://gemini.google.com/app"
+BROWSER_SOURCES = ("chrome", "edge")
 
 
 def _extract_cookie_values() -> dict[str, str] | None:
@@ -27,20 +28,25 @@ def _extract_cookie_values() -> dict[str, str] | None:
     except Exception:
         return None
 
-    try:
-        jar = browser_cookie3.chrome(domain_name=".google.com")
-    except Exception:
-        return None
+    for browser_name in BROWSER_SOURCES:
+        reader = getattr(browser_cookie3, browser_name, None)
+        if reader is None:
+            continue
+        try:
+            jar = reader(domain_name=".google.com")
+        except Exception:
+            continue
 
-    values: dict[str, str] = {}
-    for cookie in jar:
-        if cookie.name == "__Secure-1PSID":
-            values["secure_1psid"] = cookie.value
-        elif cookie.name == "__Secure-1PSIDTS":
-            values["secure_1psidts"] = cookie.value
+        values: dict[str, str] = {}
+        for cookie in jar:
+            if cookie.name == "__Secure-1PSID":
+                values["secure_1psid"] = cookie.value
+            elif cookie.name == "__Secure-1PSIDTS":
+                values["secure_1psidts"] = cookie.value
 
-    if values.get("secure_1psid"):
-        return values
+        if values.get("secure_1psid"):
+            values["browser"] = browser_name
+            return values
     return None
 
 
@@ -64,11 +70,15 @@ def launch_login_flow() -> dict[str, str] | None:
     )
     webbrowser.open(LOGIN_URL)
     input(
-        "After you finish signing into Gemini in Chrome, press Enter here to continue..."
+        "After you finish signing into Gemini in Chrome or Edge, press Enter here to continue..."
     )
     cookies = persist_browser_cookies()
     if cookies:
-        print(f"Saved Gemini login cookies to {COOKIE_PATH}", file=sys.stderr)
+        browser_name = cookies.get("browser", "browser")
+        print(
+            f"Saved Gemini login cookies from {browser_name} to {COOKIE_PATH}",
+            file=sys.stderr,
+        )
     return cookies
 
 

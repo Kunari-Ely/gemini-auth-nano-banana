@@ -27,6 +27,7 @@ Install the skill from https://github.com/Kunari-Ely/gemini-auth-nano-banana
 - 支持文字加一张或多张参考图
 - 参考 `awesome-nano-banana-pro-prompts` 优化提示词
 - 支持跨平台的 JSON prompt 工作流
+- 同步支持 Chrome 和 Edge 浏览器登录态
 - 如果登录失效，会自动打开 Gemini 登录页并在登录后保存本地 cookies
 
 快速开始：
@@ -44,9 +45,9 @@ uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to
 要求：
 
 - 安装 `uv`
-- 若要直接调用 Gemini Web，本机需已登录 `gemini.google.com`，或准备好 cookies 文件
+- 若要直接调用 Gemini Web，本机需已在 Chrome 或 Edge 登录 `gemini.google.com`，或准备好 cookies 文件
 
-如果登录状态失效，脚本会自动弹出 Gemini 登录页。用户完成登录后，脚本会把登录 cookies 保存到本地并自动重试。
+如果登录状态失效，脚本会自动弹出 Gemini 登录页。用户完成 Chrome 或 Edge 登录后，脚本会把登录 cookies 保存到本地并自动重试。
 
 English
 
@@ -75,6 +76,7 @@ Features:
 - Supports text plus one or multiple reference images
 - Optimizes prompts using patterns inspired by `awesome-nano-banana-pro-prompts`
 - Provides a cross-platform JSON prompt workflow
+- Supports both Chrome and Edge browser sessions
 - Automatically opens the Gemini login page and saves local cookies when auth expires
 
 Quick start:
@@ -92,6 +94,6 @@ uv run ./scripts/generate_image.py --prompt-json "prompt.json" --input "/path/to
 Requirements:
 
 - `uv` installed locally
-- For direct Gemini Web execution, a logged-in `gemini.google.com` browser session or a valid cookies file
+- For direct Gemini Web execution, a logged-in `gemini.google.com` session in Chrome or Edge, or a valid cookies file
 
-If the Gemini session has expired, the script opens the login page, lets the user sign in, saves local cookies, and retries automatically.
+If the Gemini session has expired, the script opens the login page, lets the user sign in with Chrome or Edge, saves local cookies, and retries automatically.
