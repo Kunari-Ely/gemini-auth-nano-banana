@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["gemini-webapi>=1.19", "browser-cookie3", "websockets", "pywin32", "cryptography"]
+# dependencies = ["gemini-webapi>=1.19", "browser-cookie3", "websockets", "pywin32", "cryptography", "httpx"]
 # ///
 """Generate an edited image from one or more source images via Gemini Web."""
 
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import types
+import base64
 import urllib.error
 import urllib.request
 import webbrowser
@@ -26,8 +27,10 @@ from tempfile import mkdtemp
 
 from gemini_webapi import GeminiClient
 from gemini_webapi.constants import Model
+import httpx
 
 COOKIE_PATH = Path.home() / ".config" / "gemini" / "cookies.json"
+API_CONFIG_PATH = Path.home() / ".config" / "gemini-auth-nano-banana" / "api.json"
 EXTERNAL_COOKIE_EXTRACTOR = Path(__file__).with_name("extract_gemini_cookies.py")
 EXTERNAL_COOKIE_OUTPUT = Path(__file__).with_name("gemini_cookies.json")
 LOGIN_URL = "https://gemini.google.com/app"
@@ -58,6 +61,142 @@ BROWSER_DEBUG_PORTS = {
 }
 TEMP_BROWSER_DIRS: list[Path] = []
 _EXTERNAL_COOKIE_EXTRACTOR_MODULE = None
+
+
+def load_api_config() -> dict[str, str] | None:
+    if not API_CONFIG_PATH.exists():
+        return None
+    try:
+        payload = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required = ("model", "base_url", "api_key")
+    if not all(payload.get(key) for key in required):
+        return None
+    return {key: str(payload[key]) for key in payload}
+
+
+def save_api_config(model_name: str, base_url: str, api_key: str) -> dict[str, str]:
+    payload = {
+        "model": model_name.strip(),
+        "base_url": base_url.rstrip("/").strip(),
+        "api_key": api_key.strip(),
+    }
+    API_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    API_CONFIG_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return payload
+
+
+def resolve_api_config(args: argparse.Namespace) -> dict[str, str] | None:
+    has_inline = any([args.api_model, args.api_base_url, args.api_key])
+    if has_inline and not all([args.api_model, args.api_base_url, args.api_key]):
+        raise ValueError(
+            "Provide --api-model, --api-base-url, and --api-key together."
+        )
+
+    config = None
+    if has_inline:
+        config = {
+            "model": args.api_model.strip(),
+            "base_url": args.api_base_url.rstrip("/").strip(),
+            "api_key": args.api_key.strip(),
+        }
+        if args.save_api_config:
+            save_api_config(
+                config["model"],
+                config["base_url"],
+                config["api_key"],
+            )
+    else:
+        config = load_api_config()
+
+    return config
+
+
+def download_file(url: str, destination: Path) -> Path:
+    with urllib.request.urlopen(url, timeout=120) as response:
+        destination.write_bytes(response.read())
+    return destination
+
+
+def write_image_bytes(image_bytes: bytes, output: str, *, suffix: str = ".png") -> Path:
+    output_path = Path(output).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path = output_path.with_suffix(suffix or ".png")
+    final_path.write_bytes(image_bytes)
+    return final_path
+
+
+def generate_image_via_api(
+    prompt: str,
+    inputs: list[str],
+    output: str,
+    api_config: dict[str, str],
+) -> Path:
+    base_url = api_config["base_url"].rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {api_config['api_key']}",
+    }
+
+    with httpx.Client(timeout=300) as client:
+        if inputs:
+            multipart_files = [
+                ("image", (Path(path).name, Path(path).read_bytes(), "image/png"))
+                for path in inputs
+            ]
+            response = client.post(
+                f"{base_url}/images/edits",
+                headers=headers,
+                data={
+                    "model": api_config["model"],
+                    "prompt": prompt,
+                    "response_format": "b64_json",
+                    "n": 1,
+                },
+                files=multipart_files,
+            )
+        else:
+            response = client.post(
+                f"{base_url}/images/generations",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": api_config["model"],
+                    "prompt": prompt,
+                    "response_format": "b64_json",
+                    "n": 1,
+                },
+            )
+
+        response.raise_for_status()
+        payload = response.json()
+
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        raise RuntimeError("API did not return image data.")
+
+    first = data[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("API returned an unexpected image payload.")
+
+    b64_json = first.get("b64_json")
+    if b64_json:
+        return write_image_bytes(base64.b64decode(b64_json), output, suffix=".png")
+
+    image_url = first.get("url")
+    if image_url:
+        output_path = Path(output).expanduser().resolve().with_suffix(".png")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        return download_file(str(image_url), output_path)
+
+    raise RuntimeError("API response did not contain b64_json or url.")
 
 
 def close_browser_process(browser_name: str) -> None:
@@ -660,8 +799,10 @@ def preflight_auth_check() -> dict[str, str] | None:
     )
 
 
-def resolve_inputs(inputs: list[str]) -> list[str]:
+def resolve_inputs(inputs: list[str] | None) -> list[str]:
     resolved: list[str] = []
+    if not inputs:
+        return resolved
     for raw_path in inputs:
         path = Path(raw_path).expanduser().resolve()
         if not path.is_file():
@@ -794,7 +935,7 @@ def run_generation_with_retries(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate an edited image from source images via Gemini Web."
+        description="Generate an edited image via Gemini Web or an OpenAI-compatible image API."
     )
     parser.add_argument("--prompt", "-p", help="Edit instruction text.")
     parser.add_argument(
@@ -805,8 +946,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         "-i",
         action="append",
-        required=True,
-        help="Source image path. Repeat this flag for multiple images.",
+        help="Optional source image path. Repeat this flag for multiple images.",
     )
     parser.add_argument(
         "--output",
@@ -819,10 +959,33 @@ def parse_args() -> argparse.Namespace:
         help="Keep the Gemini conversation instead of deleting it after generation.",
     )
     parser.add_argument(
+        "--backend",
+        choices=["auto", "web", "api"],
+        default="auto",
+        help="Execution backend. 'auto' prefers saved API config, then falls back to Gemini Web.",
+    )
+    parser.add_argument(
         "--model",
         default="unspecified",
         choices=[member.name.lower() for member in Model],
         help="Gemini web model routing hint. Default lets the web app decide.",
+    )
+    parser.add_argument(
+        "--api-model",
+        help="OpenAI-compatible image model name to save or use for API generation.",
+    )
+    parser.add_argument(
+        "--api-base-url",
+        help="OpenAI-compatible API base URL, for example https://api.example.com/v1.",
+    )
+    parser.add_argument(
+        "--api-key",
+        help="OpenAI-compatible API key.",
+    )
+    parser.add_argument(
+        "--save-api-config",
+        action="store_true",
+        help="Save the provided API config to the local skill config file.",
     )
     return parser.parse_args()
 
@@ -832,6 +995,7 @@ def main() -> int:
     output = args.output or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-gemini-edit.png"
 
     try:
+        api_config = resolve_api_config(args)
         prompt = args.prompt
         if args.prompt_json:
             prompt_data = json.loads(
@@ -841,30 +1005,42 @@ def main() -> int:
         if not prompt:
             raise ValueError("Provide --prompt or --prompt-json.")
         inputs = resolve_inputs(args.input)
-        preflight_auth_check()
-        try:
-            final_path = run_generation_with_retries(
-                prompt,
-                inputs,
-                output,
-                model=Model[args.model.upper()],
-                delete_chat=not args.keep_chat,
-            )
-        except Exception as exc:
-            if not looks_like_auth_error(exc):
-                raise
-            cookies = launch_login_flow()
-            if not cookies:
+        if args.backend == "api" or (args.backend == "auto" and api_config):
+            if not api_config:
                 raise RuntimeError(
-                    "Gemini login was not detected after opening the login page."
-                ) from exc
-            final_path = run_generation_with_retries(
+                    "No API config found. Provide --api-model, --api-base-url, and --api-key."
+                )
+            final_path = generate_image_via_api(
                 prompt,
                 inputs,
                 output,
-                model=Model[args.model.upper()],
-                delete_chat=not args.keep_chat,
+                api_config,
             )
+        else:
+            preflight_auth_check()
+            try:
+                final_path = run_generation_with_retries(
+                    prompt,
+                    inputs,
+                    output,
+                    model=Model[args.model.upper()],
+                    delete_chat=not args.keep_chat,
+                )
+            except Exception as exc:
+                if not looks_like_auth_error(exc):
+                    raise
+                cookies = launch_login_flow()
+                if not cookies:
+                    raise RuntimeError(
+                        "Gemini login was not detected after opening the login page."
+                    ) from exc
+                final_path = run_generation_with_retries(
+                    prompt,
+                    inputs,
+                    output,
+                    model=Model[args.model.upper()],
+                    delete_chat=not args.keep_chat,
+                )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

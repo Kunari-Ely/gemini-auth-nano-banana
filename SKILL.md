@@ -10,14 +10,15 @@ Use this skill as a platform-agnostic agent workflow.
 The skill has two layers:
 
 1. Prompt planning and optimization, which works on any agent platform.
-2. Optional Gemini Web execution through a logged-in browser session on machines that support the bundled script.
+2. Optional execution through either a saved OpenAI-compatible image API or Gemini Web browser auth.
 
 ## Cross-Platform Workflow
 
 1. Gather the user goal, output format, and reference images.
 2. Convert the request into a JSON prompt.
 3. Send that JSON prompt plus the reference images to the platform's preferred Gemini workflow.
-5. If the local environment supports Gemini Web auth, use the bundled execution script.
+5. If the user has provided an image API model, base URL, and API key, save them and use the bundled execution script in API mode.
+6. Otherwise, if the local environment supports Gemini Web auth, use the bundled execution script in web mode.
 
 This workflow is suitable for Codex, Claude Code, OpenClaw, Antigravity, and other agent frameworks because the planning format is plain JSON.
 
@@ -95,19 +96,32 @@ uv run {baseDir}/scripts/optimize_prompt.py --goal "Create a crouching full-body
 
 This prints the final JSON prompt that should be sent to Nano Banana.
 
+### Optional local execution through an API backend
+
+```bash
+uv run {baseDir}/scripts/generate_image.py --backend api --api-model "your-image-model" --api-base-url "https://api.example.com/v1" --api-key "YOUR_KEY" --save-api-config --prompt-json "/path/to/prompt.json" --input "/path/to/source.png" --output "result.png"
+```
+
+This stores the API config locally and uses an OpenAI-compatible image API for generation or editing.
+
 ### Optional local execution through Gemini Web
 
 ```bash
-uv run {baseDir}/scripts/generate_image.py --prompt-json "/path/to/prompt.json" --input "/path/to/source.png" --output "result.png"
+uv run {baseDir}/scripts/generate_image.py --backend web --prompt-json "/path/to/prompt.json" --input "/path/to/source.png" --output "result.png"
 ```
 
-Use the execution script only when the current machine can access Gemini Web through browser cookies or a local cookies file.
+Use the execution script in `auto` mode when you want it to prefer a saved API config and fall back to Gemini Web only when needed.
 
-## Authentication For Execution
+## Execution Backends
 
-The execution step uses the Gemini web session from Chrome, Edge, or a local cookies file. It does not use Google AI Studio or Gemini API keys.
+The execution step supports two modes:
 
-Before each generation, the script performs a strong preflight auth check. For newer Chrome and Edge builds, it first calls the bundled `scripts/extract_gemini_cookies.py` helper to handle the newer Chromium cookie encryption path, then falls back to legacy browser-cookie extraction only if needed. If no usable Gemini login is available, it opens the Gemini login page in the default browser, waits for the user to finish signing in through Chrome or Edge, then saves the refreshed login cookies to the local cookies file and retries automatically.
+1. A saved OpenAI-compatible image API config at `~/.config/gemini-auth-nano-banana/api.json`
+2. A Gemini web session from Chrome, Edge, or a local cookies file
+
+When the user gives you a model name, API base URL, and API key, save them and prefer API mode.
+
+For Gemini Web mode, before each generation, the script performs a strong preflight auth check. For newer Chrome and Edge builds, it first calls the bundled `scripts/extract_gemini_cookies.py` helper to handle the newer Chromium cookie encryption path, then falls back to legacy browser-cookie extraction only if needed. If no usable Gemini login is available, it opens the Gemini login page in the default browser, waits for the user to finish signing in through Chrome or Edge, then saves the refreshed login cookies to the local cookies file and retries automatically.
 
 When browser cookie extraction requires the browser to be closed, the script automatically closes Chrome or Edge before reading cookies.
 
